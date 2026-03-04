@@ -81,7 +81,7 @@ pub async fn run(
     let mut steps: Vec<InstallStep> = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
 
-    // First resolve deps (they use the single-mapping path — first mapping per platform)
+    // First resolve deps
     resolve_deps(
         &client,
         &detail,
@@ -91,6 +91,7 @@ pub async fn run(
         &mut visited,
         with_optional,
         skip_recommended,
+        yes,
     )
     .await?;
 
@@ -410,6 +411,7 @@ async fn resolve_deps(
     visited: &mut HashSet<String>,
     with_optional: bool,
     skip_recommended: bool,
+    yes: bool,
 ) -> Result<()> {
     let key = format!("{}/{}", detail.project.slug, detail.tool.slug);
     if visited.contains(&key) {
@@ -448,28 +450,20 @@ async fn resolve_deps(
             visited,
             with_optional,
             skip_recommended,
+            yes,
         ))
         .await?;
 
-        // Add the dep itself (using first mapping per platform)
-        let platform_info = dep_detail
-            .tool
-            .platforms
-            .get(platform)
-            .or_else(|| dep_detail.tool.platforms.get("default"));
-
-        let platform_info = match platform_info {
-            Some(p) => p.clone(),
-            None => continue, // Skip dep if no platform build
+        // Get platform mappings for this dep
+        let dep_mappings = match get_platform_mappings(&dep_detail, platform) {
+            Ok(m) => m,
+            Err(_) => continue, // Skip dep if no platform build
         };
 
-        // Skip if already installed with same SHA
-        if let Some(existing) = state.find(&dep_detail.project.slug, &dep_detail.tool.slug) {
-            if existing.sha256.as_deref() == platform_info.sha256.as_deref()
-                && platform_info.sha256.is_some()
-            {
-                continue;
-            }
+        // Let user select which files to install (same UX as target tool)
+        let selected = select_mappings(&dep_detail, &dep_mappings, None, yes)?;
+        if selected.is_empty() {
+            continue;
         }
 
         let platform_key = if dep_detail.tool.platforms.contains_key(platform) {
@@ -478,19 +472,36 @@ async fn resolve_deps(
             "default".to_string()
         };
 
-        steps.push(InstallStep {
-            project_slug: dep_detail.project.slug.clone(),
-            tool_slug: dep_detail.tool.slug.clone(),
-            latest_filename: platform_info.latest_filename.clone(),
-            platform_key,
-            version: platform_info.version.clone(),
-            sha256: platform_info.sha256.clone(),
-            size_bytes: platform_info.size_bytes,
-            dep_type: dep.dependency_type.clone(),
-            auto_dependency: true,
-            installed_by: Some(key.clone()),
-            prerequisites: dep_detail.tool.prerequisites.clone(),
-        });
+        for mapping in &selected {
+            // Skip if already installed with same SHA
+            let already_current = state
+                .installed
+                .iter()
+                .any(|t| {
+                    t.project_slug == dep_detail.project.slug
+                        && t.tool_slug == dep_detail.tool.slug
+                        && t.path.ends_with(&mapping.latest_filename)
+                        && t.sha256.as_deref() == mapping.sha256.as_deref()
+                        && mapping.sha256.is_some()
+                });
+            if already_current {
+                continue;
+            }
+
+            steps.push(InstallStep {
+                project_slug: dep_detail.project.slug.clone(),
+                tool_slug: dep_detail.tool.slug.clone(),
+                latest_filename: mapping.latest_filename.clone(),
+                platform_key: platform_key.clone(),
+                version: mapping.version.clone(),
+                sha256: mapping.sha256.clone(),
+                size_bytes: mapping.size_bytes,
+                dep_type: dep.dependency_type.clone(),
+                auto_dependency: true,
+                installed_by: Some(key.clone()),
+                prerequisites: dep_detail.tool.prerequisites.clone(),
+            });
+        }
     }
 
     Ok(())
