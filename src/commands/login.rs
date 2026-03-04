@@ -18,11 +18,10 @@ pub async fn run(portal_url_flag: Option<&str>) -> Result<()> {
         .default(default_url)
         .interact_text()?;
 
-    let default_org = config.org_slug.clone().unwrap_or_default();
-    let org_slug: String = Input::with_theme(&ColorfulTheme::default())
-        .with_prompt("Organization slug")
-        .default(default_org)
-        .interact_text()?;
+    let org_slug = config
+        .org_slug
+        .clone()
+        .unwrap_or_else(|| "axxonsoft".to_string());
 
     let client = ForgeClient::anonymous(&portal_url)?;
 
