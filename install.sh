@@ -20,7 +20,7 @@ set -euo pipefail
 
 # ── Defaults ──────────────────────────────────────────────────────────
 PORTAL_URL="${FORGE_PORTAL_URL:-https://artifacts.digitalsecurityguard.com}"
-ORG_SLUG="${FORGE_ORG:-}"
+ORG_SLUG="${FORGE_ORG:-axxonsoft}"
 INSTALL_DIR="${FORGE_INSTALL_DIR:-/usr/local/bin}"
 TOKEN="${FORGE_TOKEN:-}"
 PLATFORM_ARCH=""
@@ -280,21 +280,7 @@ main() {
         die "${INSTALL_DIR} is not writable. Run with: curl -sSL <url> | sudo bash"
     fi
 
-    # Prompt for org slug if not set
-    if [ -z "$ORG_SLUG" ]; then
-        echo ""
-        # When piped via curl | bash, stdin is the script itself.
-        # We must read from /dev/tty for interactive prompts.
-        if ! exec 3</dev/tty 2>/dev/null; then
-            die "No terminal for interactive prompt. Pass FORGE_ORG:\n  curl -sSL <url> | sudo FORGE_ORG=my-org bash"
-        fi
-        echo -n "  Organization slug: "
-        read -r ORG_SLUG <&3
-        exec 3<&-
-        if [ -z "$ORG_SLUG" ]; then
-            die "Organization slug is required."
-        fi
-    fi
+    ok "Organization: ${ORG_SLUG}"
 
     echo ""
 
