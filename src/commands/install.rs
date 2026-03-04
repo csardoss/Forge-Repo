@@ -197,9 +197,21 @@ pub async fn run(
     }
 
     // Ensure install directory exists
-    tokio::fs::create_dir_all(install_dir)
-        .await
-        .with_context(|| format!("Failed to create install directory: {install_dir}"))?;
+    if tokio::fs::create_dir_all(install_dir).await.is_err() {
+        // Try with sudo (common for /opt/tools)
+        let status = std::process::Command::new("sudo")
+            .args(["mkdir", "-p", install_dir])
+            .status()
+            .with_context(|| format!("Failed to create install directory: {install_dir}"))?;
+        if !status.success() {
+            bail!("Failed to create install directory: {install_dir}");
+        }
+        // Make it writable by current user
+        let user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
+        let _ = std::process::Command::new("sudo")
+            .args(["chown", &user, install_dir])
+            .status();
+    }
 
     // Execute plan
     let mut any_failed = false;
