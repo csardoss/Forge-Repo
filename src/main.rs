@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 
 #[derive(Parser)]
-#[command(name = "forge", version = "0.1.0", about = "Forge CLI — tool manager for the artifact portal")]
+#[command(name = "forge", version = "0.2.0", about = "Forge CLI — tool manager for the artifact portal")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
