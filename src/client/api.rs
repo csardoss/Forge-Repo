@@ -172,7 +172,7 @@ impl ForgeClient {
     /// Create an authenticated client.
     pub fn new(portal_url: &str, token: &str) -> Result<Self> {
         let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, HeaderValue::from_static("forge/0.2.0"));
+        headers.insert(USER_AGENT, HeaderValue::from_static("forge/0.3.0"));
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
         headers.insert(
             AUTHORIZATION,
@@ -189,7 +189,7 @@ impl ForgeClient {
     /// Create an anonymous client (for pairing endpoints).
     pub fn anonymous(portal_url: &str) -> Result<Self> {
         let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, HeaderValue::from_static("forge/0.2.0"));
+        headers.insert(USER_AGENT, HeaderValue::from_static("forge/0.3.0"));
         headers.insert(ACCEPT, HeaderValue::from_static("application/json"));
         let http = reqwest::Client::builder()
             .default_headers(headers)
