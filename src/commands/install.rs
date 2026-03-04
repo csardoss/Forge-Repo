@@ -573,11 +573,43 @@ async fn execute_install_step(
     )
     .await?;
 
-    // chmod 755
-    tokio::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755)).await?;
-
     // Atomic rename
     tokio::fs::rename(&tmp_path, &final_path).await?;
+
+    // Post-download: install based on file extension
+    let filename = presign.filename.to_lowercase();
+    if filename.ends_with(".deb") {
+        // Install Debian package
+        println!("    {} Running dpkg -i {}...", "→".cyan(), presign.filename);
+        let status = std::process::Command::new("sudo")
+            .args(["dpkg", "-i", &final_path.to_string_lossy()])
+            .status()
+            .context("Failed to run dpkg")?;
+        if !status.success() {
+            // Try to fix broken dependencies
+            println!("    {} Fixing dependencies with apt-get -f install...", "→".cyan());
+            let fix_status = std::process::Command::new("sudo")
+                .args(["apt-get", "-f", "install", "-y"])
+                .status()
+                .context("Failed to run apt-get -f install")?;
+            if !fix_status.success() {
+                bail!("dpkg -i failed for {} and apt-get -f install could not fix it", presign.filename);
+            }
+        }
+    } else if filename.ends_with(".tar.gz") || filename.ends_with(".tgz") {
+        // Extract tarball to install dir
+        println!("    {} Extracting {}...", "→".cyan(), presign.filename);
+        let status = std::process::Command::new("tar")
+            .args(["xzf", &final_path.to_string_lossy(), "-C", install_dir])
+            .status()
+            .context("Failed to extract tarball")?;
+        if !status.success() {
+            bail!("Failed to extract {}", presign.filename);
+        }
+    } else {
+        // Raw binary or unknown — just make executable
+        tokio::fs::set_permissions(&final_path, std::fs::Permissions::from_mode(0o755)).await?;
+    }
 
     // Update state
     state.upsert(InstalledTool {
