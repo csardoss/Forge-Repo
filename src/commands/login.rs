@@ -51,6 +51,9 @@ pub async fn run(portal_url_flag: Option<&str>) -> Result<()> {
         .await
         .context("Failed to start pairing")?;
 
+    // Build full approval URL (server returns relative path like /pair/XXXX-XXXXX)
+    let full_approval_url = format!("{}{}", portal_url, start_resp.pairing_url);
+
     println!();
     println!(
         "  Pairing code:  {}",
@@ -58,7 +61,7 @@ pub async fn run(portal_url_flag: Option<&str>) -> Result<()> {
     );
     println!(
         "  Approve at:    {}",
-        start_resp.pairing_url.underline()
+        full_approval_url.underline()
     );
     println!();
 
@@ -70,10 +73,10 @@ pub async fn run(portal_url_flag: Option<&str>) -> Result<()> {
     );
     spinner.enable_steady_tick(std::time::Duration::from_millis(120));
 
-    // Poll every 2 seconds
+    // Poll every 7 seconds (server rate limit: 10 req/min per IP)
     let exchange_token;
     loop {
-        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(7)).await;
         let status = client
             .pairing_status(&start_resp.pairing_code)
             .await

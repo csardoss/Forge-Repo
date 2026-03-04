@@ -122,7 +122,7 @@ do_pairing() {
     info "Waiting for approval..."
     local status_resp status exchange_token
     while true; do
-        sleep 2
+        sleep 7
         status_resp=$(curl -sS "${PORTAL_URL}/api/v2/pairing/status/${pairing_code}" 2>/dev/null) || continue
         status=$(echo "$status_resp" | jq -r '.status')
 
