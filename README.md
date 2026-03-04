@@ -5,7 +5,7 @@ A tool manager for the [Artifact Upload Portal](https://artifacts.digitalsecurit
 ## Quick Install
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/csardoss/Forge-Repo/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/csardoss/Forge-Repo/main/install.sh | sudo bash
 ```
 
 The installer will:
@@ -24,7 +24,7 @@ The installer will:
 ### Custom Install Directory
 
 ```bash
-FORGE_INSTALL_DIR=/opt/tools curl -sSL https://raw.githubusercontent.com/csardoss/Forge-Repo/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/csardoss/Forge-Repo/main/install.sh | sudo FORGE_INSTALL_DIR=/opt/tools bash
 ```
 
 ### Non-Interactive Install (CI/CD)
@@ -32,7 +32,7 @@ FORGE_INSTALL_DIR=/opt/tools curl -sSL https://raw.githubusercontent.com/csardos
 If you already have an API token:
 
 ```bash
-FORGE_TOKEN=apt_xxxxx FORGE_ORG=my-org curl -sSL https://raw.githubusercontent.com/csardoss/Forge-Repo/main/install.sh | bash
+curl -sSL https://raw.githubusercontent.com/csardoss/Forge-Repo/main/install.sh | sudo FORGE_TOKEN=apt_xxxxx FORGE_ORG=my-org bash
 ```
 
 ## Commands

@@ -6,9 +6,9 @@
 # No API key required — just approve the pairing request in your browser.
 #
 # Usage:
-#   curl -sSL https://raw.githubusercontent.com/csardoss/Forge-Repo/main/install.sh | bash
+#   curl -sSL https://raw.githubusercontent.com/csardoss/Forge-Repo/main/install.sh | sudo bash
 #   # or
-#   ./install.sh
+#   sudo ./install.sh
 #
 # Environment overrides:
 #   FORGE_PORTAL_URL   Portal base URL (default: https://artifacts.digitalsecurityguard.com)
@@ -231,7 +231,12 @@ do_install() {
 
 # ── Save credentials for forge CLI ───────────────────────────────────
 save_credentials() {
-    local config_dir="${HOME}/.config/forge"
+    # When run via sudo, save to the real user's home, not root's
+    local real_home="${HOME}"
+    if [ -n "${SUDO_USER:-}" ]; then
+        real_home=$(eval echo "~${SUDO_USER}")
+    fi
+    local config_dir="${real_home}/.config/forge"
     mkdir -p "$config_dir"
     chmod 700 "$config_dir"
 
@@ -247,7 +252,12 @@ EOF
     chmod 600 "${config_dir}/credentials.json.tmp"
     mv "${config_dir}/credentials.json.tmp" "${config_dir}/credentials.json"
 
-    ok "Credentials saved to ~/.config/forge/credentials.json"
+    # Fix ownership if running as sudo
+    if [ -n "${SUDO_USER:-}" ]; then
+        chown -R "${SUDO_USER}:$(id -gn "${SUDO_USER}")" "${config_dir}"
+    fi
+
+    ok "Credentials saved to ${config_dir}/credentials.json"
 }
 
 # ── Main ─────────────────────────────────────────────────────────────
@@ -264,16 +274,18 @@ main() {
     # Ensure install directory exists and is writable
     if [ ! -d "$INSTALL_DIR" ]; then
         info "Creating install directory: ${INSTALL_DIR}"
-        mkdir -p "$INSTALL_DIR" || die "Cannot create ${INSTALL_DIR}. Try: sudo mkdir -p ${INSTALL_DIR} && sudo chown \$(whoami) ${INSTALL_DIR}"
+        mkdir -p "$INSTALL_DIR" || die "Cannot create ${INSTALL_DIR}. Try running with sudo."
     fi
     if [ ! -w "$INSTALL_DIR" ]; then
-        die "${INSTALL_DIR} is not writable. Try: sudo chown \$(whoami) ${INSTALL_DIR}"
+        die "${INSTALL_DIR} is not writable. Run with: curl -sSL <url> | sudo bash"
     fi
 
     # Prompt for org slug if not set
+    # Use /dev/tty so prompts work even when script is piped via curl | bash
     if [ -z "$ORG_SLUG" ]; then
         echo ""
-        read -rp "  Organization slug: " ORG_SLUG
+        echo -n "  Organization slug: "
+        read -r ORG_SLUG < /dev/tty
         if [ -z "$ORG_SLUG" ]; then
             die "Organization slug is required."
         fi
