@@ -5,29 +5,33 @@ use std::path::PathBuf;
 use anyhow::{bail, Context, Result};
 use chrono::Utc;
 use colored::Colorize;
-use dialoguer::Confirm;
+use dialoguer::{Confirm, MultiSelect, theme::ColorfulTheme};
 
 use crate::client::api::{
-    ForgeClient, PlatformInfo, PresignLatestRequest, ToolDetailResponse,
+    ForgeClient, MappingInfo, PresignLatestRequest, ToolDetailResponse,
 };
 use crate::client::download::download_to_file;
 use crate::config::{self, Config, resolve_portal_url};
 use crate::platform::detect_platform;
 use crate::state::local::{InstalledTool, StateFile};
 
-/// A resolved install step.
+/// A resolved install step — one per file to download.
 #[derive(Debug, Clone)]
 struct InstallStep {
     project_slug: String,
     tool_slug: String,
-    platform: PlatformInfo,
+    latest_filename: String,
     platform_key: String,
-    dep_type: String,        // "target", "required", "recommended", "optional"
+    version: Option<String>,
+    sha256: Option<String>,
+    size_bytes: Option<i64>,
+    dep_type: String, // "target", "required", "recommended", "optional"
     auto_dependency: bool,
     installed_by: Option<String>,
     prerequisites: Option<String>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     tool: &str,
     project: Option<&str>,
@@ -37,6 +41,7 @@ pub async fn run(
     yes: bool,
     with_optional: bool,
     skip_recommended: bool,
+    filename_filters: Option<&str>,
 ) -> Result<()> {
     let config = Config::load()?;
     let portal_url = resolve_portal_url(portal_url_flag, &config);
@@ -56,9 +61,27 @@ pub async fn run(
     // Load current state
     let mut state = StateFile::load()?;
 
+    // Get platform mappings for the target tool
+    let target_mappings = get_platform_mappings(&detail, &platform)?;
+
+    // Select which mappings to install
+    let selected_mappings = select_mappings(
+        &detail,
+        &target_mappings,
+        filename_filters,
+        yes,
+    )?;
+
+    if selected_mappings.is_empty() {
+        println!("  No files selected.");
+        return Ok(());
+    }
+
     // Resolve dependencies (topological order, deps before target)
     let mut steps: Vec<InstallStep> = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
+
+    // First resolve deps (they use the single-mapping path — first mapping per platform)
     resolve_deps(
         &client,
         &detail,
@@ -66,11 +89,48 @@ pub async fn run(
         &state,
         &mut steps,
         &mut visited,
-        None,
         with_optional,
         skip_recommended,
     )
     .await?;
+
+    // Now add the target tool's selected mappings as steps
+    let platform_key = if detail.tool.platforms.contains_key(&platform) {
+        platform.clone()
+    } else {
+        "default".to_string()
+    };
+
+    for mapping in &selected_mappings {
+        // Skip if already installed with same SHA
+        let already_current = state
+            .installed
+            .iter()
+            .any(|t| {
+                t.project_slug == detail.project.slug
+                    && t.tool_slug == detail.tool.slug
+                    && t.path.ends_with(&mapping.latest_filename)
+                    && t.sha256.as_deref() == mapping.sha256.as_deref()
+                    && mapping.sha256.is_some()
+            });
+        if already_current {
+            continue;
+        }
+
+        steps.push(InstallStep {
+            project_slug: detail.project.slug.clone(),
+            tool_slug: detail.tool.slug.clone(),
+            latest_filename: mapping.latest_filename.clone(),
+            platform_key: platform_key.clone(),
+            version: mapping.version.clone(),
+            sha256: mapping.sha256.clone(),
+            size_bytes: mapping.size_bytes,
+            dep_type: "target".to_string(),
+            auto_dependency: false,
+            installed_by: None,
+            prerequisites: detail.tool.prerequisites.clone(),
+        });
+    }
 
     if steps.is_empty() {
         println!("  {} is already installed and up to date.", tool.bold());
@@ -81,23 +141,24 @@ pub async fn run(
     display_plan(&steps)?;
 
     // Show prerequisites warnings
+    let mut shown_prereqs: HashSet<String> = HashSet::new();
     for step in &steps {
         if let Some(prereqs) = &step.prerequisites {
-            println!(
-                "\n  {} Prerequisites for {}:",
-                "⚠".yellow(),
-                step.tool_slug.bold()
-            );
-            println!("    {prereqs}");
+            let key = format!("{}/{}", step.project_slug, step.tool_slug);
+            if shown_prereqs.insert(key) {
+                println!(
+                    "\n  {} Prerequisites for {}:",
+                    "⚠".yellow(),
+                    step.tool_slug.bold()
+                );
+                println!("    {prereqs}");
+            }
         }
     }
 
     // Prompt for recommended deps
-    let recommended_steps: Vec<_> = steps
-        .iter()
-        .filter(|s| s.dep_type == "recommended")
-        .collect();
-    let include_recommended = if !recommended_steps.is_empty() && !yes && !skip_recommended {
+    let has_recommended = steps.iter().any(|s| s.dep_type == "recommended");
+    let include_recommended = if has_recommended && !yes && !skip_recommended {
         println!();
         Confirm::new()
             .with_prompt("  Install recommended dependencies too?")
@@ -143,28 +204,31 @@ pub async fn run(
     let mut any_failed = false;
     for step in &steps {
         println!(
-            "\n  {} {}/{}...",
+            "\n  {} {}/{}  {}...",
             "Installing".cyan(),
             step.project_slug,
-            step.tool_slug
+            step.tool_slug,
+            step.latest_filename.dimmed()
         );
 
         match execute_install_step(&client, step, install_dir, &mut state).await {
             Ok(()) => {
                 state.save()?;
                 println!(
-                    "  {} {}/{}",
+                    "  {} {}/{}  {}",
                     "✓".green(),
                     step.project_slug,
-                    step.tool_slug
+                    step.tool_slug,
+                    step.latest_filename
                 );
             }
             Err(e) => {
                 eprintln!(
-                    "  {} Failed to install {}/{}: {e}",
+                    "  {} Failed to install {}/{} ({}): {e}",
                     "✗".red(),
                     step.project_slug,
-                    step.tool_slug
+                    step.tool_slug,
+                    step.latest_filename
                 );
                 any_failed = true;
                 break;
@@ -176,11 +240,141 @@ pub async fn run(
         bail!("Installation completed with errors.");
     }
 
-    println!("\n  {} All tools installed successfully.", "✓".green().bold());
+    println!("\n  {} All files installed successfully.", "✓".green().bold());
     Ok(())
 }
 
-async fn resolve_project(client: &ForgeClient, tool: &str, project: Option<&str>) -> Result<String> {
+/// Get all mappings for the given platform from the tool detail.
+fn get_platform_mappings(
+    detail: &ToolDetailResponse,
+    platform: &str,
+) -> Result<Vec<MappingInfo>> {
+    // Use the mappings array if available (supports multiple files per platform)
+    if !detail.tool.mappings.is_empty() {
+        let matches: Vec<MappingInfo> = detail
+            .tool
+            .mappings
+            .iter()
+            .filter(|m| m.platform_arch == platform || m.platform_arch == "default")
+            .cloned()
+            .collect();
+        if !matches.is_empty() {
+            return Ok(matches);
+        }
+    }
+
+    // Fallback to platforms dict (single mapping per platform, backward compat)
+    let platform_info = detail
+        .tool
+        .platforms
+        .get(platform)
+        .or_else(|| detail.tool.platforms.get("default"));
+
+    match platform_info {
+        Some(p) => Ok(vec![MappingInfo {
+            platform_arch: platform.to_string(),
+            latest_filename: p.latest_filename.clone(),
+            latest_url: p.latest_url.clone(),
+            version: p.version.clone(),
+            sha256: p.sha256.clone(),
+            size_bytes: p.size_bytes,
+        }]),
+        None => bail!(
+            "Tool {}/{} has no build for platform '{platform}'.\nAvailable: {}",
+            detail.project.slug,
+            detail.tool.slug,
+            detail
+                .tool
+                .platforms
+                .keys()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
+}
+
+/// Let the user select which mappings to install.
+fn select_mappings(
+    detail: &ToolDetailResponse,
+    mappings: &[MappingInfo],
+    filename_filter: Option<&str>,
+    yes: bool,
+) -> Result<Vec<MappingInfo>> {
+    // If only one mapping, use it directly
+    if mappings.len() == 1 {
+        return Ok(mappings.to_vec());
+    }
+
+    // If --filename specified, filter to matching
+    if let Some(filter) = filename_filter {
+        let matches: Vec<MappingInfo> = mappings
+            .iter()
+            .filter(|m| m.latest_filename == filter)
+            .cloned()
+            .collect();
+        if matches.is_empty() {
+            bail!(
+                "No mapping with filename '{}' found for {}/{}.\nAvailable: {}",
+                filter,
+                detail.project.slug,
+                detail.tool.slug,
+                mappings
+                    .iter()
+                    .map(|m| m.latest_filename.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+        return Ok(matches);
+    }
+
+    // If --yes, install all
+    if yes {
+        return Ok(mappings.to_vec());
+    }
+
+    // Interactive: show checklist
+    println!(
+        "\n  {} has {} files available:",
+        format!("{}/{}", detail.project.slug, detail.tool.slug).bold(),
+        mappings.len()
+    );
+
+    let items: Vec<String> = mappings
+        .iter()
+        .map(|m| {
+            let version = m.version.as_deref().unwrap_or("-");
+            let size = m
+                .size_bytes
+                .map(|s| format_size(s))
+                .unwrap_or_else(|| "-".to_string());
+            format!("{:<40} {} {}", m.latest_filename, version, size)
+        })
+        .collect();
+
+    // Default: all selected
+    let defaults: Vec<bool> = vec![true; items.len()];
+
+    let selections = MultiSelect::with_theme(&ColorfulTheme::default())
+        .with_prompt("  Select files to install (space to toggle, enter to confirm)")
+        .items(&items)
+        .defaults(&defaults)
+        .interact()?;
+
+    let selected: Vec<MappingInfo> = selections
+        .into_iter()
+        .map(|i| mappings[i].clone())
+        .collect();
+
+    Ok(selected)
+}
+
+async fn resolve_project(
+    client: &ForgeClient,
+    tool: &str,
+    project: Option<&str>,
+) -> Result<String> {
     match project {
         Some(p) => Ok(p.to_string()),
         None => {
@@ -205,6 +399,7 @@ async fn resolve_project(client: &ForgeClient, tool: &str, project: Option<&str>
     }
 }
 
+/// Resolve dependency steps (for deps, use first mapping per platform).
 #[allow(clippy::too_many_arguments)]
 async fn resolve_deps(
     client: &ForgeClient,
@@ -213,17 +408,16 @@ async fn resolve_deps(
     state: &StateFile,
     steps: &mut Vec<InstallStep>,
     visited: &mut HashSet<String>,
-    installed_by: Option<&str>,
     with_optional: bool,
     skip_recommended: bool,
 ) -> Result<()> {
     let key = format!("{}/{}", detail.project.slug, detail.tool.slug);
     if visited.contains(&key) {
-        return Ok(()); // cycle or already processed
+        return Ok(());
     }
     visited.insert(key.clone());
 
-    // Process dependencies first (topological order)
+    // Process dependencies (topological order — deps before this tool)
     for dep in &detail.tool.dependencies {
         let include = match dep.dependency_type.as_str() {
             "required" => true,
@@ -240,12 +434,11 @@ async fn resolve_deps(
             continue;
         }
 
-        // Fetch dep detail for its own dependencies
         let dep_detail = client
             .get_tool_detail(&dep.project_slug, &dep.tool_slug)
             .await?;
 
-        // Recurse
+        // Recurse for the dep's own deps
         Box::pin(resolve_deps(
             client,
             &dep_detail,
@@ -253,75 +446,52 @@ async fn resolve_deps(
             state,
             steps,
             visited,
-            Some(&key),
             with_optional,
             skip_recommended,
         ))
         .await?;
-    }
 
-    // Now add this tool itself
-    let is_target = installed_by.is_none();
-    let dep_type = if is_target {
-        "target".to_string()
-    } else {
-        // Find how the parent depends on this tool
-        "required".to_string()
-    };
+        // Add the dep itself (using first mapping per platform)
+        let platform_info = dep_detail
+            .tool
+            .platforms
+            .get(platform)
+            .or_else(|| dep_detail.tool.platforms.get("default"));
 
-    // Check if already installed with matching SHA
-    let platform_info = detail
-        .tool
-        .platforms
-        .get(platform)
-        .or_else(|| detail.tool.platforms.get("default"));
+        let platform_info = match platform_info {
+            Some(p) => p.clone(),
+            None => continue, // Skip dep if no platform build
+        };
 
-    let platform_info = match platform_info {
-        Some(p) => p.clone(),
-        None => {
-            if is_target {
-                bail!(
-                    "Tool {}/{} has no build for platform '{platform}'.\nAvailable: {}",
-                    detail.project.slug,
-                    detail.tool.slug,
-                    detail
-                        .tool
-                        .platforms
-                        .keys()
-                        .cloned()
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                );
+        // Skip if already installed with same SHA
+        if let Some(existing) = state.find(&dep_detail.project.slug, &dep_detail.tool.slug) {
+            if existing.sha256.as_deref() == platform_info.sha256.as_deref()
+                && platform_info.sha256.is_some()
+            {
+                continue;
             }
-            return Ok(()); // Skip dep if no platform build
         }
-    };
 
-    // Skip if already installed with same SHA
-    if let Some(existing) = state.find(&detail.project.slug, &detail.tool.slug) {
-        if existing.sha256.as_deref() == platform_info.sha256.as_deref()
-            && platform_info.sha256.is_some()
-        {
-            return Ok(()); // Already up to date
-        }
+        let platform_key = if dep_detail.tool.platforms.contains_key(platform) {
+            platform.to_string()
+        } else {
+            "default".to_string()
+        };
+
+        steps.push(InstallStep {
+            project_slug: dep_detail.project.slug.clone(),
+            tool_slug: dep_detail.tool.slug.clone(),
+            latest_filename: platform_info.latest_filename.clone(),
+            platform_key,
+            version: platform_info.version.clone(),
+            sha256: platform_info.sha256.clone(),
+            size_bytes: platform_info.size_bytes,
+            dep_type: dep.dependency_type.clone(),
+            auto_dependency: true,
+            installed_by: Some(key.clone()),
+            prerequisites: dep_detail.tool.prerequisites.clone(),
+        });
     }
-
-    let platform_key = if detail.tool.platforms.contains_key(platform) {
-        platform.to_string()
-    } else {
-        "default".to_string()
-    };
-
-    steps.push(InstallStep {
-        project_slug: detail.project.slug.clone(),
-        tool_slug: detail.tool.slug.clone(),
-        platform: platform_info,
-        platform_key,
-        dep_type: if is_target { "target".to_string() } else { dep_type },
-        auto_dependency: !is_target,
-        installed_by: installed_by.map(String::from),
-        prerequisites: detail.tool.prerequisites.clone(),
-    });
 
     Ok(())
 }
@@ -329,13 +499,8 @@ async fn resolve_deps(
 fn display_plan(steps: &[InstallStep]) -> Result<()> {
     println!("\n  {}", "Install plan:".bold());
     for (i, step) in steps.iter().enumerate() {
-        let version = step
-            .platform
-            .version
-            .as_deref()
-            .unwrap_or("-");
+        let version = step.version.as_deref().unwrap_or("-");
         let size = step
-            .platform
             .size_bytes
             .map(|s| format_size(s))
             .unwrap_or_else(|| "-".to_string());
@@ -346,12 +511,12 @@ fn display_plan(steps: &[InstallStep]) -> Result<()> {
             _ => String::new(),
         };
         println!(
-            "    {}. {}/{} → {} {} {} {}",
+            "    {}. {}/{}  {} → {} {} {}",
             i + 1,
             step.project_slug,
-            step.tool_slug.bold(),
+            step.latest_filename.bold(),
+            step.tool_slug.dimmed(),
             version,
-            step.platform_key,
             size,
             tag
         );
@@ -365,20 +530,18 @@ async fn execute_install_step(
     install_dir: &str,
     state: &mut StateFile,
 ) -> Result<()> {
-    // Get presigned URL
     let presign = client
         .presign_latest(&PresignLatestRequest {
             project: step.project_slug.clone(),
             tool: step.tool_slug.clone(),
             platform_arch: step.platform_key.clone(),
-            latest_filename: step.platform.latest_filename.clone(),
+            latest_filename: step.latest_filename.clone(),
         })
         .await?;
 
     let final_path = PathBuf::from(install_dir).join(&presign.filename);
     let tmp_path = final_path.with_extension("forge-tmp");
 
-    // Download + verify
     let actual_sha = download_to_file(
         &presign.url,
         &tmp_path,
@@ -397,7 +560,7 @@ async fn execute_install_step(
     state.upsert(InstalledTool {
         project_slug: step.project_slug.clone(),
         tool_slug: step.tool_slug.clone(),
-        version: step.platform.version.clone(),
+        version: step.version.clone(),
         sha256: Some(actual_sha),
         path: final_path.to_string_lossy().to_string(),
         installed_at: Utc::now().to_rfc3339(),

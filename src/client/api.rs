@@ -32,6 +32,8 @@ pub struct CatalogTool {
     pub slug: String,
     pub prerequisites: Option<String>,
     pub platforms: std::collections::HashMap<String, PlatformInfo>,
+    #[serde(default)]
+    pub mappings: Vec<MappingInfo>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -62,8 +64,20 @@ pub struct ToolDetailTool {
     pub slug: String,
     pub prerequisites: Option<String>,
     pub platforms: std::collections::HashMap<String, PlatformInfo>,
+    #[serde(default)]
+    pub mappings: Vec<MappingInfo>,
     pub dependencies: Vec<ToolDependency>,
     pub releases: Vec<ReleaseInfo>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MappingInfo {
+    pub platform_arch: String,
+    pub latest_filename: String,
+    pub latest_url: Option<String>,
+    pub version: Option<String>,
+    pub sha256: Option<String>,
+    pub size_bytes: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

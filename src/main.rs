@@ -59,6 +59,10 @@ enum Commands {
         /// Skip recommended dependencies
         #[arg(long)]
         skip_recommended: bool,
+
+        /// Specific filename/mapping to install (when tool has multiple)
+        #[arg(long)]
+        filename: Option<String>,
     },
 
     /// Upgrade installed tools to the latest version
@@ -133,6 +137,7 @@ async fn main() {
             yes,
             with_optional,
             skip_recommended,
+            filename,
         } => {
             commands::install::run(
                 &tool,
@@ -143,6 +148,7 @@ async fn main() {
                 yes,
                 with_optional,
                 skip_recommended,
+                filename.as_deref(),
             )
             .await
         }
