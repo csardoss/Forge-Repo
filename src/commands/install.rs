@@ -42,6 +42,7 @@ pub async fn run(
     with_optional: bool,
     skip_recommended: bool,
     filename_filters: Option<&str>,
+    reinstall: bool,
 ) -> Result<()> {
     let config = Config::load()?;
     let portal_url = resolve_portal_url(portal_url_flag, &config);
@@ -92,6 +93,7 @@ pub async fn run(
         with_optional,
         skip_recommended,
         yes,
+        reinstall,
     )
     .await?;
 
@@ -103,19 +105,21 @@ pub async fn run(
     };
 
     for mapping in &selected_mappings {
-        // Skip if already installed with same SHA
-        let already_current = state
-            .installed
-            .iter()
-            .any(|t| {
-                t.project_slug == detail.project.slug
-                    && t.tool_slug == detail.tool.slug
-                    && t.path.ends_with(&mapping.latest_filename)
-                    && t.sha256.as_deref() == mapping.sha256.as_deref()
-                    && mapping.sha256.is_some()
-            });
-        if already_current {
-            continue;
+        // Skip if already installed with same SHA (unless --reinstall)
+        if !reinstall {
+            let already_current = state
+                .installed
+                .iter()
+                .any(|t| {
+                    t.project_slug == detail.project.slug
+                        && t.tool_slug == detail.tool.slug
+                        && t.path.ends_with(&mapping.latest_filename)
+                        && t.sha256.as_deref() == mapping.sha256.as_deref()
+                        && mapping.sha256.is_some()
+                });
+            if already_current {
+                continue;
+            }
         }
 
         steps.push(InstallStep {
@@ -424,6 +428,7 @@ async fn resolve_deps(
     with_optional: bool,
     skip_recommended: bool,
     yes: bool,
+    reinstall: bool,
 ) -> Result<()> {
     let key = format!("{}/{}", detail.project.slug, detail.tool.slug);
     if visited.contains(&key) {
@@ -463,6 +468,7 @@ async fn resolve_deps(
             with_optional,
             skip_recommended,
             yes,
+            reinstall,
         ))
         .await?;
 
@@ -485,19 +491,21 @@ async fn resolve_deps(
         };
 
         for mapping in &selected {
-            // Skip if already installed with same SHA
-            let already_current = state
-                .installed
-                .iter()
-                .any(|t| {
-                    t.project_slug == dep_detail.project.slug
-                        && t.tool_slug == dep_detail.tool.slug
-                        && t.path.ends_with(&mapping.latest_filename)
-                        && t.sha256.as_deref() == mapping.sha256.as_deref()
-                        && mapping.sha256.is_some()
-                });
-            if already_current {
-                continue;
+            // Skip if already installed with same SHA (unless --reinstall)
+            if !reinstall {
+                let already_current = state
+                    .installed
+                    .iter()
+                    .any(|t| {
+                        t.project_slug == dep_detail.project.slug
+                            && t.tool_slug == dep_detail.tool.slug
+                            && t.path.ends_with(&mapping.latest_filename)
+                            && t.sha256.as_deref() == mapping.sha256.as_deref()
+                            && mapping.sha256.is_some()
+                    });
+                if already_current {
+                    continue;
+                }
             }
 
             steps.push(InstallStep {
@@ -562,7 +570,13 @@ async fn execute_install_step(
         })
         .await?;
 
-    let final_path = PathBuf::from(install_dir).join(&presign.filename);
+    // Use original filename (e.g. "axxon-one-core_2.0.16.90_amd64.deb") for saving
+    // Fall back to the latest_filename alias if original not available
+    let save_filename = presign
+        .original_filename
+        .as_deref()
+        .unwrap_or(&presign.filename);
+    let final_path = PathBuf::from(install_dir).join(save_filename);
     let tmp_path = final_path.with_extension("forge-tmp");
 
     let actual_sha = download_to_file(
@@ -577,7 +591,7 @@ async fn execute_install_step(
     tokio::fs::rename(&tmp_path, &final_path).await?;
 
     // Post-download: install based on file extension
-    let filename = presign.filename.to_lowercase();
+    let filename = save_filename.to_lowercase();
     if filename.ends_with(".deb") {
         // Install Debian package
         println!("    {} Running dpkg -i {}...", "→".cyan(), presign.filename);

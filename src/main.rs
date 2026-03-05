@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use colored::Colorize;
 
 #[derive(Parser)]
-#[command(name = "forge", version = "0.4.0", about = "Forge CLI — tool manager for the artifact portal")]
+#[command(name = "forge", version = "0.5.0", about = "Forge CLI — tool manager for the artifact portal")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -63,6 +63,10 @@ enum Commands {
         /// Specific filename/mapping to install (when tool has multiple)
         #[arg(long)]
         filename: Option<String>,
+
+        /// Reinstall even if already installed
+        #[arg(long)]
+        reinstall: bool,
     },
 
     /// Upgrade installed tools to the latest version
@@ -138,6 +142,7 @@ async fn main() {
             with_optional,
             skip_recommended,
             filename,
+            reinstall,
         } => {
             commands::install::run(
                 &tool,
@@ -149,6 +154,7 @@ async fn main() {
                 with_optional,
                 skip_recommended,
                 filename.as_deref(),
+                reinstall,
             )
             .await
         }
